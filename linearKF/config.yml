@@ -1,0 +1,21 @@
+simulation:
+  model_path: "./models/biped_simple.xml"
+  duration: 10  # seconds
+  save_data: false  # Set to true to save the data
+  enable_random_control: true  # Set to true to enable random control
+
+sensors:
+  accelerometer_indices: [0, 1, 2]  # Indices for accelerometer [ax, ay, az]
+  
+  camera_position_indices: [6, 7, 8] # Indices for camera [x, y, z]
+  camera_velocity_indices: [9, 10, 11] # Indices for camera [vx, vy, vz]
+
+  camera_noise: 0.005  # Standard deviation of noise added to camera measurements
+
+viewer:
+  enable_contact_points: true  # Toggle visualization of contacts
+  contact_toggle_interval: 2  # Seconds
+
+initial_conditions:
+  position: [0, 0, 0.85] # [x0, y0, z0]
+  velocity: [0, 0, 0]  # [vx0, vy0, vz0]
