@@ -3,163 +3,209 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 from scipy.integrate import solve_ivp
+import matplotlib.pyplot as plt
+import yaml 
 
-# Load MuJoCo model
-model = mujoco.MjModel.from_xml_path("./models/biped_simple.xml")
+# Load parameters from config.yml
+with open("config.yml", "r") as file:
+    config = yaml.safe_load(file)
+
+# Extract parameters from config:
+
+# Simulation settings
+model_path = config["simulation"]["model_path"]
+sim_duration = config["simulation"]["duration"]
+save_data = config["simulation"]["save_data"]
+enable_random_control = config["simulation"]["enable_random_control"]
+
+# Sensor indices
+accelerometer_indices = config["sensors"]["accelerometer_indices"]
+camera_pos_indices = config["sensors"]["camera_position_indices"]
+camera_vel_indices = config["sensors"]["camera_velocity_indices"]
+
+# Viewer settings
+enable_contact_points = config["viewer"]["enable_contact_points"]
+contact_toggle_interval = config["viewer"]["contact_toggle_interval"]
+
+# Load the model and create data instance
+model = mujoco.MjModel.from_xml_path(model_path)
 data = mujoco.MjData(model)
 
-# Simulation time settings
-SIM_TIME = 30  # Run for 30 seconds
-DT = model.opt.timestep  # Simulation timestep
+# Calculate approximately how many needed steps based on the simulation timestep
+estimated_steps = int(sim_duration / model.opt.timestep)
 
-# Time Data
-time_series = []
+timestamps = np.zeros(estimated_steps)
 
-# Ground Truth Data
-p_true_series = []  # Ground truth position
-v_true_series = []  # Ground truth velocity
+# Store the ground truth state [xpos, ypos, zpos, xvel, yvel, zvel]
+ground_truth_data = np.zeros((estimated_steps, 6))
 
-# IMU Data
-v_imu_series = []  # Velocity from single integration of accelerometer
-p_imu_series = []  # Position from double integration of accelerometer
+# Store the camera data
+camera_data = np.zeros((estimated_steps, 6))
 
-# Camera Data (T265 proxy)
-p_cam_series = []  # Noisy camera position
-v_cam_series = []  # Noisy camera velocity
+# Store the integrated position and velocity
+accelerometer_data = np.zeros((estimated_steps, 6))
 
-# Initialize initial state for IMU integrator
-v_imu = np.zeros(3)  # Assume zero initial velocity
-p_imu = np.zeros(3)  # Assume zero initial position
+# Set up the initial conditions for the accelerometer integration
+initial_conditions = np.array(config["initial_conditions"]["position"] + config["initial_conditions"]["velocity"])  # [x0, y0, z0, vx0, vy0, vz0]
+prev_accelerometer_state = None
 
-def imu_rk4_integration(accel, v_init, p_init, dt):
-    # Integrate IMU acceleration using RK4 to compute velocity and position
+# Initialize the data step counter
+data_step = 0
+
+def collect_ground_truth(data):
+    """
+    Collects the ground truth position and velocity.
+    Returns: np.array [xpos, ypos, zpos, xvel, yvel, zvel]
+    """
+    return np.concatenate((data.qpos[0:3], data.qvel[0:3]))
+
+def collect_camera_data(data):
+    """
+    Collects the simulated camera position and velocity with added Gaussian noise.
+
+    Returns:
+    np.array: Noisy [xpos, ypos, zpos, xvel, yvel, zvel]
+    """
+    camera_data = data.sensordata[camera_pos_indices[0]: camera_vel_indices[-1] + 1]
     
-    def dynamics(t, y):
-        # Defines the system of ODEs: y = [v_x, v_y, v_z, p_x, p_y, p_z]
-        v = y[:3]  # Velocity components
-        a = accel  # Acceleration remains constant over dt
-        dpdt = v
-        dvdt = a 
-        return np.concatenate([dvdt, dpdt])  # Return [dv/dt, dp/dt]
+    # Add small Gaussian noise
+    noise = np.random.normal(loc=0.0, scale=config["sensors"]["camera_noise"], size=camera_data.shape)  # Mean=0, Std=camera_noise
+    return camera_data + noise
 
-    # Initial state [v_x, v_y, v_z, p_x, p_y, p_z]
-    y0 = np.concatenate([v_init, p_init])
+def collect_accelerometer_data(accel, initial_conditions, prev_integrated_state=None):
+    """
+    Integrates accelerometer readings to estimate position and velocity using RK4.
+
+    Parameters:
+    accel (np.array): The accelerometer readings [ax, ay, az]
+    initial_conditions (np.array): Initial state [x0, y0, z0, vx0, vy0, vz0]
+    prev_integrated_state (np.array, optional): Previous step's integrated state
+
+    Returns:
+    np.array: Estimated [xpos, ypos, zpos, xvel, yvel, zvel]
+    """
+    def dynamics(t, state):
+        """State dynamics for integration: position and velocity updates."""
+        x, y, z, vx, vy, vz = state
+        ax, ay, az = accel  # Acceleration components
+        return [vx, vy, vz, ax, ay, az]
+
+    # Solve using RK4 (RK45) from t=0 to t=dt
+    dt = model.opt.timestep
     
-    # Solve the ODE using RK4
-    sol = solve_ivp(dynamics, [0, dt], y0, method='RK45', t_eval=[dt])
-
-    # Extract final velocity and position
-    v_next = sol.y[:3, -1]
-    p_next = sol.y[3:, -1]
+    # Decide on initial state
+    if prev_integrated_state is not None:
+        # Use previous step's result if available
+        initial_state = prev_integrated_state
+    else:
+        # Use provided initial conditions for the first step
+        initial_state = initial_conditions
     
-    return v_next, p_next
+    # Solve the integration
+    sol = solve_ivp(dynamics, [0, dt], initial_state, method='RK45')
 
-# Simulate noisy T265 measurements (model noise as Gaussian distribution)
-def get_noisy_camera_measurement():
-    # Retrieve camera position & velocity from MuJoCo and apply Gaussian noise
+    # Extract final values
+    return sol.y[:, -1]  # Returns updated [x, y, z, vx, vy, vz]
 
-    # Extract true position and velocity from MuJoCo
-    p_cam_true = data.sensordata[2:5]  # True position from framepos
-    v_cam_true = data.sensordata[5:8]  # True velocity from framevel
-
-    # Define measurement noise covariance matrices
-    R_p = np.diag([0.01, 0.01, 0.01])  # Position noise covariance
-    R_v = np.diag([0.02, 0.02, 0.02])  # Velocity noise covariance
-
-    # Generate Gaussian noise for position and velocity
-    #v_p = np.random.multivariate_normal(mean=np.zeros(3), cov=R_p)  # Position noise
-    #v_v = np.random.multivariate_normal(mean=np.zeros(3), cov=R_v)  # Velocity noise
-    v_p = 0
-    v_v = 0
-
-    # Compute noisy measurements
-    p_cam_noisy = p_cam_true + v_p
-    v_cam_noisy = v_cam_true + v_v
-
-    return p_cam_noisy, v_cam_noisy
-
-# Define rotation from robot local frame to world frame of reference
-def transform_to_world_frame(vec_local, quat_robot):
-    
-    # Convert a vector from the robot’s local frame to the global frame
-    vec_world = np.zeros(3)
-    
-    # Convert MuJoCo quaternion (w, x, y, z) -> (x, y, z, w)
-    quat_reordered = np.roll(quat_robot, -1)  
-    
-    mujoco.mju_rotVecQuat(vec_world, vec_local, quat_reordered)
-    return vec_world
-
-# Launch MuJoCo viewer and start simulation loop
 with mujoco.viewer.launch_passive(model, data) as viewer:
+    # Close the viewer automatically after sim_duration wall-seconds.
     start = time.time()
-    
-    while viewer.is_running() and time.time() - start < SIM_TIME:
+    while viewer.is_running() and time.time() - start < sim_duration and data_step < estimated_steps:
         step_start = time.time()
 
-        # Get ground truth from MuJoCo -- FIX THIS!
-        p_true = data.qpos[:3]  # True position
-        v_true = data.qvel[:3]  # True velocity
+        # Apply random control signals if enabled in config
+        if enable_random_control:
+            data.ctrl[:] = np.random.uniform(-30, 30, data.ctrl.shape)
 
-        # Get IMU data
-        imu_accel_local = data.sensordata[:3]  # IMU acceleration in robot frame
-
-        # Get robot orientation quaternion from qpos
-        q_robot_to_world = data.qpos[3:7]  # (w, x, y, z)
-
-        #st = time.time()
-
-        # Use RK4 for IMU-based integration in the local frame
-        v_imu_local, p_imu_local = imu_rk4_integration(imu_accel_local, v_imu, p_imu, DT)
-
-        #print("RK4 time: ", time.time() - st)
-
-        # Convert IMU-integrated velocity and position to world frame
-        v_imu = transform_to_world_frame(v_imu_local, q_robot_to_world)
-        p_imu = transform_to_world_frame(p_imu_local, q_robot_to_world)
-
-        # Retrieve noisy camera data (position & velocity in robot frame)
-        p_cam_local, v_cam_local = get_noisy_camera_measurement() 
-
-        # Transform camera data to world frame
-        p_cam = transform_to_world_frame(p_cam_local, q_robot_to_world)
-        v_cam = transform_to_world_frame(v_cam_local, q_robot_to_world)
-
-        # Store data in arrays
-        time_series.append(data.time)
-        p_true_series.append(p_true)
-        v_true_series.append(v_true)
-        v_imu_series.append(v_imu)
-        p_imu_series.append(p_imu)
-        p_cam_series.append(p_cam)
-        v_cam_series.append(v_cam)
-
-        # Step the MuJoCo physics simulation
+        # Step the simulation
         mujoco.mj_step(model, data)
+        
+        # Record data at every simulation step
+        if data_step < estimated_steps:
+            # Get the ground truth state
+            ground_truth_data[data_step] = collect_ground_truth(data)
+            
+            # Get the T265 camera data
+            camera_data[data_step] = collect_camera_data(data)
 
-        # Print collected data for debugging
-        print(f"Time: {data.time:.6f}")
-        print(f"  p_true:  {np.round(p_true, 3)} | v_true:  {np.round(v_true, 3)}")
-        print(f"  p_imu_world: {np.round(p_imu, 3)} | v_imu_world: {np.round(v_imu, 3)}")
-        print(f"  p_cam_world: {np.round(p_cam, 3)} | v_cam_world: {np.round(v_cam, 3)}\n")
+            # Integrate accelerometer data to get estimated velocity and position
+            accelerometer_data[data_step] = collect_accelerometer_data(data.sensordata[accelerometer_indices[0]:accelerometer_indices[-1] + 1], initial_conditions, prev_accelerometer_state)
+        
+            # Update the previous state for next iteration
+            prev_accelerometer_state = accelerometer_data[data_step]
 
-        # Sync viewer
-        with viewer.lock():
-            viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = int(data.time % 2)
+            # Store timestamp
+            timestamps[data_step] = data.time
+            
+            # Print the data at this step for debugging
+            '''print(f"Step #{data_step}")
+            
+            print(f"Ground Truth State:{ground_truth_data[data_step]}")
+            print(f"Camera State: {camera_data[data_step]}")
+            print(f"Accelerometer State: {accelerometer_data[data_step]}")
+
+            print(f"Time: {timestamps[data_step]} s")
+            print("-----------------------------\n")'''
+
+            data_step += 1
+
+        # Toggle contact points visualization based on config
+        if enable_contact_points:
+            with viewer.lock():
+                viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = int(data.time % contact_toggle_interval)
+
         viewer.sync()
 
-        # Timekeeping
-        time_until_next_step = DT - (time.time() - step_start)
+        # Time keeping
+        time_until_next_step = model.opt.timestep - (time.time() - step_start)
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
 
-# Convert to NumPy arrays for further analysis
-p_true_series = np.array(p_true_series)
-v_true_series = np.array(v_true_series)
-v_imu_series = np.array(v_imu_series)
-p_imu_series = np.array(p_imu_series)
-p_cam_series = np.array(p_cam_series)
-v_cam_series = np.array(v_cam_series)
+# Truncate arrays to the actual number of recorded steps
+ground_truth_data = ground_truth_data[:data_step]
+camera_data = camera_data[:data_step]
+accelerometer_data = accelerometer_data[:data_step]
+timestamps = timestamps[:data_step]
 
-# Plot data here
-print("Data collection complete!")
+print(f"Data collection complete. Recorded {data_step} timesteps.")
+
+# Plot function with subplots
+def plot_subplots(fig, axes, row_idx, title, y_label, data_gt, data_cam, data_acc):
+    """Plots data in a given subplot."""
+    ax = axes[row_idx]
+    ax.plot(timestamps, data_gt, label="Ground Truth")
+    ax.plot(timestamps, data_cam, label="Camera", linestyle="--", alpha=0.5)
+    ax.plot(timestamps, data_acc, label="Accelerometer", linestyle=":")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True)
+
+# Create figure for position plots
+fig_pos, axes_pos = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+plot_subplots(fig_pos, axes_pos, 0, "Position X", "X Position (m)", ground_truth_data[:, 0], camera_data[:, 0], accelerometer_data[:, 0])
+plot_subplots(fig_pos, axes_pos, 1, "Position Y", "Y Position (m)", ground_truth_data[:, 1], camera_data[:, 1], accelerometer_data[:, 1])
+plot_subplots(fig_pos, axes_pos, 2, "Position Z", "Z Position (m)", ground_truth_data[:, 2], camera_data[:, 2], accelerometer_data[:, 2])
+fig_pos.tight_layout()
+
+# Create figure for velocity plots
+fig_vel, axes_vel = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+plot_subplots(fig_vel, axes_vel, 0, "Velocity X", "X Velocity (m/s)", ground_truth_data[:, 3], camera_data[:, 3], accelerometer_data[:, 3])
+plot_subplots(fig_vel, axes_vel, 1, "Velocity Y", "Y Velocity (m/s)", ground_truth_data[:, 4], camera_data[:, 4], accelerometer_data[:, 4])
+plot_subplots(fig_vel, axes_vel, 2, "Velocity Z", "Z Velocity (m/s)", ground_truth_data[:, 5], camera_data[:, 5], accelerometer_data[:, 5])
+fig_vel.tight_layout()
+
+plt.show()
+
+# Save data if enabled in config
+if save_data:
+    np.savez("data.npz",
+             timestamps=timestamps,
+             ground_truth=ground_truth_data,
+             camera_data=camera_data,
+             accelerometer_data=accelerometer_data)
+    fig_pos.savefig("position_plots.png")
+    fig_vel.savefig("velocity_plots.png")
+
+    print("Data and plots saved to 'data.npz'")
