@@ -93,8 +93,8 @@ def collect_camera_data(data):
     camera_data = data.sensordata[camera_pos_indices[0]: camera_vel_indices[-1] + 1]
     
     # Add small Gaussian noise
-    # noise = np.random.normal(loc=0.0, scale=config["sensors"]["camera_noise"], size=camera_data.shape)  # Mean=0, Std=camera_noise
-    noise = 0
+    noise = np.random.normal(loc=0.0, scale=config["sensors"]["camera_noise"], size=camera_data.shape)  # Mean=0, Std=camera_noise
+    # noise = 0
     return camera_data + noise
 
 def collect_accelerometer_data(accel, initial_conditions, prev_integrated_state=None):
@@ -109,10 +109,16 @@ def collect_accelerometer_data(accel, initial_conditions, prev_integrated_state=
     Returns:
     np.array: Estimated [xpos, ypos, zpos, xvel, yvel, zvel]
     """
+    
+    # Add Gaussian noise to the IMU readings
+    accel_noise = np.random.normal(loc=0.0, scale=config["sensors"]["accelerometer_noise"], size=accel.shape)
+    # accel_noise = 0
+    noisy_accel = accel + accel_noise
+
     def dynamics(t, state):
         """State dynamics for integration: position and velocity updates."""
         x, y, z, vx, vy, vz = state
-        ax, ay, az = accel  # Acceleration components
+        ax, ay, az = noisy_accel  # Noisy acceleration components
         return [vx, vy, vz, ax, ay, az]
 
     # Solve using RK4 (RK45) from t=0 to t=dt
@@ -269,10 +275,10 @@ print(f"Data collection complete. Recorded {data_step} timesteps.")
 def plot_subplots(fig, axes, row_idx, title, y_label, data_gt, data_cam, data_acc, data_kf):
     """Plots data in a given subplot."""
     ax = axes[row_idx]
-    ax.plot(timestamps, data_gt, label="Ground Truth")
+    ax.plot(timestamps, data_gt, label="Ground Truth", alpha=1.0)
     ax.plot(timestamps, data_cam, label="Camera", linestyle="--", alpha=0.5)
-    ax.plot(timestamps, data_acc, label="Accelerometer", linestyle=":")
-    ax.plot(timestamps, data_kf, label="Kalman Filter", linewidth=2)
+    ax.plot(timestamps, data_acc, label="Accelerometer", linestyle=":", alpha=0.5)
+    ax.plot(timestamps, data_kf, label="Kalman Filter", linewidth=2, alpha=0.5)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel(y_label)
     ax.set_title(title)
