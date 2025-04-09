@@ -19,3 +19,12 @@ viewer:
 initial_conditions:
   position: [0, 0, 0.85] # [x0, y0, z0]
   velocity: [0, 0, 0]  # [vx0, vy0, vz0]
+
+kalman:
+  Q_position_variance: 1.0e-5  # Process noise for position
+  Q_velocity_variance: 1.0e-5  # Process noise for velocity
+
+  R_position_variance: 1.0e-2  # Measurement noise for position
+  R_velocity_variance: 1.0e-2  # Measurement noise for velocity
+
+  initial_state_covariance: 0.0  # P_0 error covariance initialization
