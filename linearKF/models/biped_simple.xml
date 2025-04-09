@@ -127,7 +127,7 @@
 
 	<sensor>
 		<!-- IMU Sensors on Trunk -->
-		<accelerometer name="imu_accel"		 site="root"/>
+		<framelinacc name="imu_accel" objtype="body" objname="trunk"/>
 		<gyro name="imu_gyro"             	 site="root"/>
 
 		<!-- Camera Sensor (T265) -->

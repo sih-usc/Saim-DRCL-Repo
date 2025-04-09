@@ -45,6 +45,9 @@ camera_data = np.zeros((estimated_steps, 6))
 # Store the integrated position and velocity
 accelerometer_data = np.zeros((estimated_steps, 6))
 
+# Store the accelerometer raw data (for debugging)
+# accel_raw_data = np.zeros((estimated_steps, 3))
+
 # Set up the initial conditions for the accelerometer integration
 initial_conditions = np.array(config["initial_conditions"]["position"] + config["initial_conditions"]["velocity"])  # [x0, y0, z0, vx0, vy0, vz0]
 prev_accelerometer_state = None
@@ -69,7 +72,8 @@ def collect_camera_data(data):
     camera_data = data.sensordata[camera_pos_indices[0]: camera_vel_indices[-1] + 1]
     
     # Add small Gaussian noise
-    noise = np.random.normal(loc=0.0, scale=config["sensors"]["camera_noise"], size=camera_data.shape)  # Mean=0, Std=camera_noise
+    #noise = np.random.normal(loc=0.0, scale=config["sensors"]["camera_noise"], size=camera_data.shape)  # Mean=0, Std=camera_noise
+    noise = 0
     return camera_data + noise
 
 def collect_accelerometer_data(accel, initial_conditions, prev_integrated_state=None):
@@ -128,8 +132,11 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
             # Get the T265 camera data
             camera_data[data_step] = collect_camera_data(data)
 
+            # Get the raw accelerometer data (for debugging)
+            # accel_raw_data[data_step] = data.sensordata[accelerometer_indices[0]:accelerometer_indices[-1] + 1]
+            
             # Integrate accelerometer data to get estimated velocity and position
-            accelerometer_data[data_step] = collect_accelerometer_data(data.sensordata[accelerometer_indices[0]:accelerometer_indices[-1] + 1], initial_conditions, prev_accelerometer_state)
+            accelerometer_data[data_step] = collect_accelerometer_data(data.sensordata[accelerometer_indices[0]:accelerometer_indices[-1] + 1] + model.opt.gravity, initial_conditions, prev_accelerometer_state)
         
             # Update the previous state for next iteration
             prev_accelerometer_state = accelerometer_data[data_step]
@@ -167,6 +174,8 @@ camera_data = camera_data[:data_step]
 accelerometer_data = accelerometer_data[:data_step]
 timestamps = timestamps[:data_step]
 
+# accel_raw_data = accel_raw_data[:data_step]
+
 print(f"Data collection complete. Recorded {data_step} timesteps.")
 
 # Plot function with subplots
@@ -187,14 +196,34 @@ fig_pos, axes_pos = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
 plot_subplots(fig_pos, axes_pos, 0, "Position X", "X Position (m)", ground_truth_data[:, 0], camera_data[:, 0], accelerometer_data[:, 0])
 plot_subplots(fig_pos, axes_pos, 1, "Position Y", "Y Position (m)", ground_truth_data[:, 1], camera_data[:, 1], accelerometer_data[:, 1])
 plot_subplots(fig_pos, axes_pos, 2, "Position Z", "Z Position (m)", ground_truth_data[:, 2], camera_data[:, 2], accelerometer_data[:, 2])
-fig_pos.tight_layout()
+fig_pos.tight_layout(pad=2.5)
 
 # Create figure for velocity plots
 fig_vel, axes_vel = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
 plot_subplots(fig_vel, axes_vel, 0, "Velocity X", "X Velocity (m/s)", ground_truth_data[:, 3], camera_data[:, 3], accelerometer_data[:, 3])
 plot_subplots(fig_vel, axes_vel, 1, "Velocity Y", "Y Velocity (m/s)", ground_truth_data[:, 4], camera_data[:, 4], accelerometer_data[:, 4])
 plot_subplots(fig_vel, axes_vel, 2, "Velocity Z", "Z Velocity (m/s)", ground_truth_data[:, 5], camera_data[:, 5], accelerometer_data[:, 5])
-fig_vel.tight_layout()
+fig_vel.tight_layout(pad=2.5)
+
+'''
+# Plot raw accelerometer data (for debugging)
+fig_accel, axes_accel = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+axes_accel[0].plot(timestamps, accel_raw_data[:, 0], label="Accel X", color="purple")
+axes_accel[1].plot(timestamps, accel_raw_data[:, 1], label="Accel Y", color="purple")
+axes_accel[2].plot(timestamps, accel_raw_data[:, 2], label="Accel Z", color="purple")
+
+axes_accel[0].set_title("Accelerometer X")
+axes_accel[1].set_title("Accelerometer Y")
+axes_accel[2].set_title("Accelerometer Z")
+
+for ax in axes_accel:
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Acceleration (m/s²)")
+    ax.legend()
+    ax.grid(True)
+
+fig_accel.tight_layout()
+'''
 
 plt.show()
 
@@ -209,3 +238,12 @@ if save_data:
     fig_vel.savefig("velocity_plots.png")
 
     print("Data and plots saved to 'data.npz'")
+
+'''
+# Print sensor information (for debugging)
+for i in range(model.nsensor):
+    name = model.sensor(i).name
+    addr = model.sensor_adr[i]
+    dim = model.sensor_dim[i]
+    print(f"{i}: {name} -> indices {addr} to {addr + dim - 1}")'
+'''
