@@ -7,12 +7,14 @@ simulation:
 sensors:
   accelerometer_indices: [0, 1, 2]  # Indices for accelerometer [ax, ay, az]
   
-  accelerometer_noise: 0.05  # Standard deviation of noise added to accelerometer measurements
+  # Standard deviation of noise added to accelerometer measurements
+  accelerometer_noise: 0.05  # [m/s^2]
 
   camera_position_indices: [6, 7, 8] # Indices for camera [x, y, z]
   camera_velocity_indices: [9, 10, 11] # Indices for camera [vx, vy, vz]
 
-  camera_noise: 0.01  # Standard deviation of noise added to camera measurements
+  # Standard deviation of noise added to camera measurements
+  camera_noise: 0.01  # [m] or [m/s]
 
 viewer:
   enable_contact_points: true  # Toggle visualization of contacts

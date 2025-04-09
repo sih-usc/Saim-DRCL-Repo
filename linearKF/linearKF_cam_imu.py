@@ -67,6 +67,9 @@ kf_data = np.zeros((estimated_steps, 6))
 # Store RMSE values
 kf_rmse = np.zeros(estimated_steps)
 
+# Store the Kalman Filter gain diagonal
+kf_gain_diag = np.zeros((estimated_steps, 6))
+
 # Store the accelerometer raw data (for debugging)
 # accel_raw_data = np.zeros((estimated_steps, 3))
 
@@ -183,7 +186,7 @@ def kalman_filter(x_prev, P_prev, a_input, z_measured, dt, Q, R):
     # ---- IV. A Posteriori Error Covariance
     P_new = (np.eye(6) - K @ C) @ P_pred
 
-    return x_new, P_new
+    return x_new, P_new, K
 
 with mujoco.viewer.launch_passive(model, data) as viewer:
     # Close the viewer automatically after sim_duration wall-seconds.
@@ -213,7 +216,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
             accelerometer_data[data_step] = collect_accelerometer_data(data.sensordata[accelerometer_indices[0]:accelerometer_indices[-1] + 1] + model.opt.gravity, initial_conditions, prev_accelerometer_state)
         
             # Apply Kalman Filter
-            kf_state, kf_cov = kalman_filter(
+            kf_state, kf_cov, kf_gain = kalman_filter(
                 kf_state,
                 kf_cov,
                 data.sensordata[accelerometer_indices[0]:accelerometer_indices[-1] + 1] + model.opt.gravity,
@@ -223,6 +226,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
                 R
             )
             kf_data[data_step] = kf_state
+            kf_gain_diag[data_step] = np.diag(kf_gain)
             
             # Calculate RMSE for the Kalman Filter
             # RMSE = sqrt(mean((estimated - ground_truth)^2))
@@ -263,11 +267,11 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
 ground_truth_data = ground_truth_data[:data_step]
 camera_data = camera_data[:data_step]
 accelerometer_data = accelerometer_data[:data_step]
+# accel_raw_data = accel_raw_data[:data_step]
 kf_data = kf_data[:data_step]
 kf_rmse = kf_rmse[:data_step]
+kf_gain_diag = kf_gain_diag[:data_step]
 timestamps = timestamps[:data_step]
-
-# accel_raw_data = accel_raw_data[:data_step]
 
 print(f"Data collection complete. Recorded {data_step} timesteps.")
 
@@ -324,10 +328,34 @@ plt.figure()
 plt.plot(timestamps, kf_rmse, color="black", label="KF RMSE")
 plt.xlabel("Time (s)")
 plt.ylabel("RMSE (m / m/s)")
-plt.title("Kalman Filter RMSE Over Time")
+plt.title("Kalman Filter State Estimate RMSE Over Time")
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
+
+# Plot Kalman Gain over time (2 subplots: position and velocity)
+fig_k, ax_k = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+labels = ["K pos X", "K pos Y", "K pos Z", "K vel X", "K vel Y", "K vel Z"]
+
+# Plot position Kalman gains
+for i in range(3):
+    ax_k[0].plot(timestamps, kf_gain_diag[:, i], label=labels[i])
+ax_k[0].set_ylabel("Kalman Gain")
+ax_k[0].legend()
+ax_k[0].set_title("Position Kalman Gain")
+ax_k[0].grid(True)
+
+# Plot velocity Kalman gains
+for i in range(3, 6):
+    ax_k[1].plot(timestamps, kf_gain_diag[:, i], label=labels[i])
+ax_k[1].set_xlabel("Time (s)")
+ax_k[1].set_ylabel("Kalman Gain")
+ax_k[1].legend()
+ax_k[1].set_title("Velocity Kalman Gain")
+ax_k[1].grid(True)
+
+fig_k.suptitle("Kalman Gain Over Time")
+fig_k.tight_layout()
 
 plt.show()
 
