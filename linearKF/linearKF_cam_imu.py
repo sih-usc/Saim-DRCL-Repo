@@ -61,6 +61,9 @@ camera_data = np.zeros((estimated_steps, 6))
 # Store the integrated position and velocity
 accelerometer_data = np.zeros((estimated_steps, 6))
 
+# Store covariance of integrated IMU estimates
+accel_cov_trace = np.zeros(estimated_steps)  # Trace of covariance
+
 # Store the Kalman Filter estimate
 kf_data = np.zeros((estimated_steps, 6))
 
@@ -191,7 +194,7 @@ def kalman_filter(x_prev, P_prev, a_input, z_measured, dt, Q, R):
 with mujoco.viewer.launch_passive(model, data) as viewer:
     # Close the viewer automatically after sim_duration wall-seconds.
     start = time.time()
-    while viewer.is_running() and time.time() - start < sim_duration and data_step < estimated_steps:
+    while viewer.is_running() and data.time < sim_duration and data_step < estimated_steps:
         step_start = time.time()
 
         # Apply random control signals if enabled in config
@@ -236,6 +239,13 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
             # Update the previous state for next iteration
             prev_accelerometer_state = accelerometer_data[data_step]
 
+            # Calculate covariance trace for accelerometer data
+            if data_step > 1:
+                cov = np.cov(accelerometer_data[:data_step, :].T)
+                accel_cov_trace[data_step] = np.trace(cov)
+            else:
+                accel_cov_trace[data_step] = 0.0
+
             # Store timestamp
             timestamps[data_step] = data.time
             
@@ -272,6 +282,7 @@ kf_data = kf_data[:data_step]
 kf_rmse = kf_rmse[:data_step]
 kf_gain_diag = kf_gain_diag[:data_step]
 timestamps = timestamps[:data_step]
+accel_cov_trace = accel_cov_trace[:data_step]
 
 print(f"Data collection complete. Recorded {data_step} timesteps.")
 
@@ -357,7 +368,56 @@ ax_k[1].grid(True)
 fig_k.suptitle("Kalman Gain Over Time")
 fig_k.tight_layout()
 
+# Plot covariance trace for accelerometer integration
+plt.figure()
+plt.plot(timestamps, accel_cov_trace, label="Trace of Covariance (Accelerometer Integration)")
+plt.xlabel("Time (s)")
+plt.ylabel("Trace of Covariance")
+plt.title("RK4-Integrated IMU State Covariance Matrix Trace Over Time")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+
+# Plot RMSE for Position States (X, Y, Z)
+fig_rmse_pos, axes_rmse_pos = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+
+position_labels = ['X Position', 'Y Position', 'Z Position']
+
+for i in range(3):
+    rmse_i = np.sqrt((kf_data[:, i] - ground_truth_data[:, i]) ** 2)
+    axes_rmse_pos[i].plot(timestamps, rmse_i, label=f'RMSE {position_labels[i]}')
+    axes_rmse_pos[i].set_ylabel('RMSE')
+    axes_rmse_pos[i].legend()
+    axes_rmse_pos[i].grid(True)
+
+axes_rmse_pos[-1].set_xlabel('Time (s)')
+fig_rmse_pos.suptitle('Kalman Filter RMSE for Position States')
+fig_rmse_pos.tight_layout(pad=2.5)
+
+# Plot RMSE for Velocity States (VX, VY, VZ)
+fig_rmse_vel, axes_rmse_vel = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+
+velocity_labels = ['X Velocity', 'Y Velocity', 'Z Velocity']
+
+for i in range(3, 6):
+    rmse_i = np.sqrt((kf_data[:, i] - ground_truth_data[:, i]) ** 2)
+    axes_rmse_vel[i-3].plot(timestamps, rmse_i, label=f'RMSE {velocity_labels[i-3]}')
+    axes_rmse_vel[i-3].set_ylabel('RMSE')
+    axes_rmse_vel[i-3].legend()
+    axes_rmse_vel[i-3].grid(True)
+
+axes_rmse_vel[-1].set_xlabel('Time (s)')
+fig_rmse_vel.suptitle('Kalman Filter RMSE for Velocity States')
+fig_rmse_vel.tight_layout(pad=2.5)
+
 plt.show()
+
+# Print final simulation time and number of data steps
+'''
+print("Final simulated time:", timestamps[-1])
+print("Number of data steps:", len(timestamps))
+print("Sim duration (from YAML):", sim_duration)
+'''
 
 # Save data if enabled in config
 if save_data:
